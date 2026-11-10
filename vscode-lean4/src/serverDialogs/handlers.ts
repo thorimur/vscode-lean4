@@ -207,6 +207,19 @@ function quickPickItemLabelAndIcon(label: string, icon: string | undefined): Pic
     return quickPickItemIconPathSupported ? { label, iconPath: new ThemeIcon(icon) } : { label: `$(${icon}) ${label}` }
 }
 
+/** VS Code shows `QuickPick.prompt` since 1.108. */
+const quickPickPromptSupported = semver.gte(version, '1.108.0')
+
+/** Shows `prompt` below the input field of `pick`, or, where VS Code can't, after `title`. */
+function setQuickPickPrompt(pick: QuickPick<QuickPickItem>, title: string | undefined, prompt: string | undefined) {
+    if (quickPickPromptSupported) {
+        // Missing from the `@types/vscode` that this extension builds against.
+        ;(pick as QuickPick<QuickPickItem> & { prompt: string | undefined }).prompt = prompt
+    } else if (prompt !== undefined) {
+        pick.title = title !== undefined ? `${title} — ${prompt}` : prompt
+    }
+}
+
 interface IndexedQuickPickItem extends QuickPickItem {
     /** Index into the `items` of the request. */
     index: number
@@ -245,6 +258,7 @@ function setQuickPickParams(
     )
     pick.items = items
     pick.placeholder = params.placeholder
+    setQuickPickPrompt(pick, params.title, params.prompt)
     pick.canSelectMany = params.canPickMany ?? false
     pick.matchOnDescription = params.matchOnDescription ?? false
     pick.matchOnDetail = params.matchOnDetail ?? false

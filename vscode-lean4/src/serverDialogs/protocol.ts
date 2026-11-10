@@ -163,6 +163,11 @@ export const quickPickItemSchema = z.object({
 const quickPickParamsSchema = quickInputSchema.extend({
     items: z.array(quickPickItemSchema),
     placeholder: z.string().optional(),
+    /**
+     * Text about the typed text or the choice, e.g. why the typed text can't be used. Shown below the
+     * input field; VS Code before 1.108 shows it after the title instead.
+     */
+    prompt: z.string().optional(),
     /** Initial filter text. */
     value: z.string().optional(),
     canPickMany: z.boolean().optional(),
