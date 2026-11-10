@@ -26,10 +26,13 @@ import {
 } from 'vscode-languageclient/node'
 import { z } from 'zod'
 import {
+    fileFiltersSchema,
     LeanQuickInputButtonResult,
     LeanShowInputBoxResult,
     LeanShowMessageRequestResult,
+    LeanShowOpenDialogResult,
     LeanShowQuickPickResult,
+    LeanShowSaveDialogResult,
     LeanWindowClientCapabilities,
     quickInputButtonSchema,
     quickInputSchema,
@@ -37,8 +40,12 @@ import {
     showInputBoxParamsSchema,
     showMessageRequestMethod,
     showMessageRequestParamsSchema,
+    showOpenDialogMethod,
+    showOpenDialogParamsSchema,
     showQuickPickMethod,
     showQuickPickParamsSchema,
+    showSaveDialogMethod,
+    showSaveDialogParamsSchema,
 } from './protocol'
 
 /** The client side of one request from `./protocol`. */
@@ -285,10 +292,51 @@ const showInputBox = serverDialog(
     },
 )
 
+function toFileFilters(
+    filters: z.output<typeof fileFiltersSchema> | undefined,
+): { [label: string]: string[] } | undefined {
+    return filters !== undefined ? Object.fromEntries(filters.map(f => [f.label, f.extensions])) : undefined
+}
+
+const showOpenDialog = serverDialog(
+    showOpenDialogMethod,
+    showOpenDialogParamsSchema,
+    async (client, params): Promise<LeanShowOpenDialogResult> => {
+        const uris = await window.showOpenDialog({
+            title: params.title,
+            openLabel: params.openLabel,
+            defaultUri:
+                params.defaultUri !== undefined ? client.protocol2CodeConverter.asUri(params.defaultUri) : undefined,
+            canSelectFiles: params.select !== 'folders',
+            canSelectFolders: params.select !== 'files',
+            canSelectMany: params.canSelectMany ?? false,
+            filters: toFileFilters(params.filters),
+        })
+        return uris?.map(uri => client.code2ProtocolConverter.asUri(uri)) ?? null
+    },
+)
+
+const showSaveDialog = serverDialog(
+    showSaveDialogMethod,
+    showSaveDialogParamsSchema,
+    async (client, params): Promise<LeanShowSaveDialogResult> => {
+        const uri = await window.showSaveDialog({
+            title: params.title,
+            saveLabel: params.saveLabel,
+            defaultUri:
+                params.defaultUri !== undefined ? client.protocol2CodeConverter.asUri(params.defaultUri) : undefined,
+            filters: toFileFilters(params.filters),
+        })
+        return uri !== undefined ? client.code2ProtocolConverter.asUri(uri) : null
+    },
+)
+
 const serverDialogs = {
     showMessageRequest,
     showQuickPick,
     showInputBox,
+    showOpenDialog,
+    showSaveDialog,
 } satisfies Record<keyof LeanWindowClientCapabilities, ServerDialog>
 
 /** Advertises exactly the requests that `registerServerDialogs` handles. */

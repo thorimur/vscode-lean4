@@ -8,8 +8,8 @@
  * Conventions shared by all requests:
  * - The client answers `null` when the user dismisses the dialog without answering.
  * - If the server cancels a request (`$/cancelRequest`) or stops, the client closes its quick pick
- *   or input box and answers `null`. Message dialogs cannot be closed by the client; they stay open
- *   until the user answers.
+ *   or input box and answers `null`. Message and file dialogs cannot be closed by the client; they
+ *   stay open until the user answers.
  * - At most one quick pick or input box is open at a time. Showing another one, whether from the
  *   server or from anywhere else in the editor, closes the previous one, which is answered `null`.
  * - Icons are named by codicon id (https://microsoft.github.io/vscode-codicons/dist/codicon.html),
@@ -34,6 +34,8 @@ export interface LeanWindowClientCapabilities {
     showMessageRequest?: LeanWindowRequestCapability
     showQuickPick?: LeanWindowRequestCapability
     showInputBox?: LeanWindowRequestCapability
+    showOpenDialog?: LeanWindowRequestCapability
+    showSaveDialog?: LeanWindowRequestCapability
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -246,3 +248,52 @@ export const showInputBoxParamsSchema = quickInputSchema.extend({
 
 export type LeanShowInputBoxParams = z.input<typeof showInputBoxParamsSchema>
 export type LeanShowInputBoxResult = { accepted: { value: string } } | LeanQuickInputButtonResult | null
+
+// ---------------------------------------------------------------------------------------------------
+// `$/lean/window/showOpenDialog` and `$/lean/window/showSaveDialog`
+// ---------------------------------------------------------------------------------------------------
+
+/** Shows the system dialog for choosing files or folders to open. */
+export const showOpenDialogMethod = '$/lean/window/showOpenDialog'
+
+/** Shows the system dialog for choosing where to save a file. */
+export const showSaveDialogMethod = '$/lean/window/showSaveDialog'
+
+/** File-type filters, in the order the dialog lists them. */
+export const fileFiltersSchema = z.array(
+    z.object({
+        label: z.string(),
+        /** Extensions without the dot, e.g. `["lean"]`. */
+        extensions: z.array(z.string()),
+    }),
+)
+
+export const showOpenDialogParamsSchema = z.object({
+    title: z.string().optional(),
+    /** Label of the button that confirms the choice. */
+    openLabel: z.string().optional(),
+    /** The file or folder the dialog starts at. */
+    defaultUri: z.string().optional(),
+    /** Whether the user selects files, folders, or both. */
+    select: z.enum(['files', 'folders', 'filesAndFolders']),
+    /** Defaults to `false`. */
+    canSelectMany: z.boolean().optional(),
+    filters: fileFiltersSchema.optional(),
+})
+
+export type LeanShowOpenDialogParams = z.input<typeof showOpenDialogParamsSchema>
+/** The chosen files or folders, as `DocumentUri`s. */
+export type LeanShowOpenDialogResult = string[] | null
+
+export const showSaveDialogParamsSchema = z.object({
+    title: z.string().optional(),
+    /** Label of the button that confirms the choice. */
+    saveLabel: z.string().optional(),
+    /** The file the dialog suggests. */
+    defaultUri: z.string().optional(),
+    filters: fileFiltersSchema.optional(),
+})
+
+export type LeanShowSaveDialogParams = z.input<typeof showSaveDialogParamsSchema>
+/** The chosen file, as a `DocumentUri`. */
+export type LeanShowSaveDialogResult = string | null
