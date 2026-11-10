@@ -3,6 +3,7 @@ import {
     CancellationToken,
     CancellationTokenSource,
     Disposable,
+    InputBoxValidationSeverity,
     MessageItem,
     MessageOptions,
     QuickInput,
@@ -26,11 +27,14 @@ import {
 import { z } from 'zod'
 import {
     LeanQuickInputButtonResult,
+    LeanShowInputBoxResult,
     LeanShowMessageRequestResult,
     LeanShowQuickPickResult,
     LeanWindowClientCapabilities,
     quickInputButtonSchema,
     quickInputSchema,
+    showInputBoxMethod,
+    showInputBoxParamsSchema,
     showMessageRequestMethod,
     showMessageRequestParamsSchema,
     showQuickPickMethod,
@@ -242,9 +246,49 @@ const showQuickPick = serverDialog(
     },
 )
 
+const validationSeverities = {
+    info: InputBoxValidationSeverity.Info,
+    warning: InputBoxValidationSeverity.Warning,
+    error: InputBoxValidationSeverity.Error,
+}
+
+const showInputBox = serverDialog(
+    showInputBoxMethod,
+    showInputBoxParamsSchema,
+    async (_, params, token): Promise<LeanShowInputBoxResult> => {
+        const box = window.createInputBox()
+        const reportButton = setUpQuickInput(box, params)
+        box.value = params.value ?? ''
+        box.valueSelection = params.valueSelection
+        box.placeholder = params.placeholder
+        box.prompt = params.prompt
+        box.password = params.password ?? false
+        const validation = params.validationMessage
+        if (validation !== undefined) {
+            box.validationMessage = { message: validation.message, severity: validationSeverities[validation.severity] }
+        }
+        // Unlike `window.showInputBox`, an input box does not itself refuse to accept on an error.
+        let rejected = validation?.severity === 'error'
+        return await showUntilHidden(box, token, respond => [
+            box.onDidAccept(() => {
+                if (!rejected) {
+                    respond({ accepted: { value: box.value } })
+                }
+            }),
+            box.onDidTriggerButton(button => respond(reportButton(button, box.value))),
+            // The message explains why the initial value was rejected, so it is stale once edited.
+            box.onDidChangeValue(() => {
+                box.validationMessage = undefined
+                rejected = false
+            }),
+        ])
+    },
+)
+
 const serverDialogs = {
     showMessageRequest,
     showQuickPick,
+    showInputBox,
 } satisfies Record<keyof LeanWindowClientCapabilities, ServerDialog>
 
 /** Advertises exactly the requests that `registerServerDialogs` handles. */

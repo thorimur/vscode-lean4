@@ -8,10 +8,10 @@
  * Conventions shared by all requests:
  * - The client answers `null` when the user dismisses the dialog without answering.
  * - If the server cancels a request (`$/cancelRequest`) or stops, the client closes its quick pick
- *   and answers `null`. Message dialogs cannot be closed by the client; they stay open until the
- *   user answers.
- * - At most one quick pick is open at a time. Showing another one, whether from the server or from
- *   anywhere else in the editor, closes the previous one, which is answered `null`.
+ *   or input box and answers `null`. Message dialogs cannot be closed by the client; they stay open
+ *   until the user answers.
+ * - At most one quick pick or input box is open at a time. Showing another one, whether from the
+ *   server or from anywhere else in the editor, closes the previous one, which is answered `null`.
  * - Icons are named by codicon id (https://microsoft.github.io/vscode-codicons/dist/codicon.html),
  *   e.g. `"arrow-right"`. Quick-pick labels, descriptions and details may also embed codicons as
  *   `$(name)`.
@@ -33,6 +33,7 @@ export type LeanWindowRequestCapability = Record<string, never>
 export interface LeanWindowClientCapabilities {
     showMessageRequest?: LeanWindowRequestCapability
     showQuickPick?: LeanWindowRequestCapability
+    showInputBox?: LeanWindowRequestCapability
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -206,3 +207,42 @@ export type LeanShowQuickPickResult =
       }
     | LeanQuickInputButtonResult
     | null
+
+// ---------------------------------------------------------------------------------------------------
+// `$/lean/window/showInputBox`
+// ---------------------------------------------------------------------------------------------------
+
+/** Lets the user enter a line of text. */
+export const showInputBoxMethod = '$/lean/window/showInputBox'
+
+export const showInputBoxParamsSchema = quickInputSchema.extend({
+    /** Initial text. */
+    value: z.string().optional(),
+    /**
+     * Part of `value` to select initially, as `[start, end)` in UTF-16 code units, like LSP
+     * positions. Defaults to all of `value`.
+     */
+    valueSelection: z
+        .tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
+        .refine(([start, end]) => start <= end, { message: 'the selection must not end before it starts' })
+        .optional(),
+    placeholder: z.string().optional(),
+    /** Text shown below the input field. */
+    prompt: z.string().optional(),
+    /** Hide the typed text. */
+    password: z.boolean().optional(),
+    /**
+     * Shown below the input field until the user edits `value`. Meant for asking again after the
+     * server rejected an answer, with `value` set to the rejected answer. With severity `error`, the
+     * user cannot accept until they edit `value`.
+     */
+    validationMessage: z
+        .object({
+            message: z.string(),
+            severity: z.enum(['info', 'warning', 'error']),
+        })
+        .optional(),
+})
+
+export type LeanShowInputBoxParams = z.input<typeof showInputBoxParamsSchema>
+export type LeanShowInputBoxResult = { accepted: { value: string } } | LeanQuickInputButtonResult | null
