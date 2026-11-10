@@ -36,6 +36,11 @@ export interface LeanWindowClientCapabilities {
     showInputBox?: LeanWindowRequestCapability
     showOpenDialog?: LeanWindowRequestCapability
     showSaveDialog?: LeanWindowRequestCapability
+    createQuickPick?: LeanWindowRequestCapability
+    updateQuickPick?: LeanWindowRequestCapability
+    createInputBox?: LeanWindowRequestCapability
+    updateInputBox?: LeanWindowRequestCapability
+    hideQuickInput?: LeanWindowRequestCapability
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -155,33 +160,35 @@ export const quickPickItemSchema = z.object({
     buttons: z.array(quickInputButtonSchema).optional(),
 })
 
-export const showQuickPickParamsSchema = quickInputSchema
-    .extend({
-        items: z.array(quickPickItemSchema),
-        placeholder: z.string().optional(),
-        /** Initial filter text. */
-        value: z.string().optional(),
-        canPickMany: z.boolean().optional(),
-        /** Also filter on `description`. Labels are always filtered on. */
-        matchOnDescription: z.boolean().optional(),
-        /** Also filter on `detail`. */
-        matchOnDetail: z.boolean().optional(),
-        /**
-         * Index into `items` of the initially highlighted item, which must not be a separator. If the
-         * initial filter text hides it, no item is highlighted.
-         */
-        activeItem: z.number().int().nonnegative().optional(),
-    })
-    .superRefine((params, ctx) => {
-        const active = params.activeItem !== undefined ? params.items[params.activeItem] : undefined
-        if (params.activeItem !== undefined && (active === undefined || active.kind === 'separator')) {
-            ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                path: ['activeItem'],
-                message: '`activeItem` must be the index of an item that is not a separator',
-            })
-        }
-    })
+const quickPickParamsSchema = quickInputSchema.extend({
+    items: z.array(quickPickItemSchema),
+    placeholder: z.string().optional(),
+    /** Initial filter text. */
+    value: z.string().optional(),
+    canPickMany: z.boolean().optional(),
+    /** Also filter on `description`. Labels are always filtered on. */
+    matchOnDescription: z.boolean().optional(),
+    /** Also filter on `detail`. */
+    matchOnDetail: z.boolean().optional(),
+    /**
+     * Index into `items` of the initially highlighted item, which must not be a separator. If the
+     * initial filter text hides it, no item is highlighted.
+     */
+    activeItem: z.number().int().nonnegative().optional(),
+})
+
+function checkActiveItem(params: z.output<typeof quickPickParamsSchema>, ctx: z.RefinementCtx) {
+    const active = params.activeItem !== undefined ? params.items[params.activeItem] : undefined
+    if (params.activeItem !== undefined && (active === undefined || active.kind === 'separator')) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['activeItem'],
+            message: '`activeItem` must be the index of an item that is not a separator',
+        })
+    }
+}
+
+export const showQuickPickParamsSchema = quickPickParamsSchema.superRefine(checkActiveItem)
 
 export type LeanQuickPickItem = z.input<typeof quickPickItemSchema>
 export type LeanShowQuickPickParams = z.input<typeof showQuickPickParamsSchema>
@@ -297,3 +304,85 @@ export const showSaveDialogParamsSchema = z.object({
 export type LeanShowSaveDialogParams = z.input<typeof showSaveDialogParamsSchema>
 /** The chosen file, as a `DocumentUri`. */
 export type LeanShowSaveDialogResult = string | null
+
+// ---------------------------------------------------------------------------------------------------
+// Live quick picks and input boxes: `$/lean/window/createQuickPick`, `$/lean/window/updateQuickPick`,
+// `$/lean/window/createInputBox`, `$/lean/window/updateInputBox` and `$/lean/window/hideQuickInput`
+// ---------------------------------------------------------------------------------------------------
+
+/**
+ * A live quick pick or input box stays open until the server hides it. It reports what the user does
+ * as events, and the server can change it while it is open, e.g. to offer items that depend on the
+ * typed text, or to explain why an answer was rejected.
+ *
+ * - `createQuickPick` and `createInputBox` show it and answer a session id.
+ * - `updateQuickPick` and `updateInputBox` optionally replace its parameters, then answer the next
+ *   event. At most one such request per session may be pending.
+ * - Events that happen while no update request is pending are queued, and consecutive value changes
+ *   are merged into the last one. If an event is queued when an update request arrives, the client
+ *   answers with that event and `applied: false`, and does not apply the update, because the update
+ *   was computed without knowing about the event.
+ * - Indices in an event refer to the parameters that were shown when it happened, with one exception
+ *   the client can't detect: VS Code resolves items and buttons in the extension, so an event the
+ *   user causes in the moment before an update's new items reach the editor is reported against the
+ *   new items, with `applied: true`. Servers that change items while the user may act should keep the
+ *   positions of existing items where they can, e.g. by adding items at the end.
+ * - `applied` is also `true` when the request carries no update.
+ * - Accepting or pressing a button does not close it. The server answers by updating it, or by
+ *   closing it with `hideQuickInput`.
+ * - It also closes when the user dismisses it, another quick input replaces it, the server cancels a
+ *   pending update request, or the client stops. The pending or next update request is then answered
+ *   `null`, and the session ends.
+ */
+export const createQuickPickMethod = '$/lean/window/createQuickPick'
+export const updateQuickPickMethod = '$/lean/window/updateQuickPick'
+export const createInputBoxMethod = '$/lean/window/createInputBox'
+export const updateInputBoxMethod = '$/lean/window/updateInputBox'
+export const hideQuickInputMethod = '$/lean/window/hideQuickInput'
+
+export const liveQuickInputSchema = z.object({
+    /** Report edits of the input field as `valueChanged` events. */
+    reportValueChanges: z.boolean().optional(),
+    /** Show a progress indicator, e.g. while the server computes an update. */
+    busy: z.boolean().optional(),
+})
+
+const sessionSchema = z.number().int().nonnegative()
+
+/** The parameters of `showQuickPick`, except that in an update, an absent `value` keeps the typed text. */
+export const createQuickPickParamsSchema = quickPickParamsSchema
+    .merge(liveQuickInputSchema)
+    .superRefine(checkActiveItem)
+
+export const updateQuickPickParamsSchema = z.object({
+    session: sessionSchema,
+    /** Replaces all parameters. Absent to only wait for the next event. */
+    update: createQuickPickParamsSchema.optional(),
+})
+
+/**
+ * The parameters of `showInputBox`, except that in an update, `value` and `valueSelection` change the
+ * typed text only when `value` is present, and `value` without `valueSelection` puts the cursor at
+ * the end. A live input box shows `validationMessage` until the server
+ * changes it, and lets the user accept despite an `error` message: the server decides what to do.
+ */
+export const createInputBoxParamsSchema = showInputBoxParamsSchema.merge(liveQuickInputSchema)
+
+export const updateInputBoxParamsSchema = z.object({
+    session: sessionSchema,
+    /** Replaces all parameters. Absent to only wait for the next event. */
+    update: createInputBoxParamsSchema.optional(),
+})
+
+export const hideQuickInputParamsSchema = z.object({ session: sessionSchema })
+
+export type LeanLiveQuickInputEvent<Result> = { result: Result } | { valueChanged: { value: string } }
+export type LeanQuickPickEvent = LeanLiveQuickInputEvent<NonNullable<LeanShowQuickPickResult>>
+export type LeanInputBoxEvent = LeanLiveQuickInputEvent<NonNullable<LeanShowInputBoxResult>>
+
+/** `null` when the session has ended. */
+export type LeanUpdateQuickInputResult<Event> = {
+    /** Whether the update was applied; see above. */
+    applied: boolean
+    event: Event
+} | null
