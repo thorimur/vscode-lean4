@@ -164,39 +164,6 @@ function setUpQuickInput(
         button === QuickInputButtons.Back ? { back: { value } } : { button: { button: buttons.indexOf(button), value } }
 }
 
-/**
- * Shows `input` until it is hidden: by a call of the `respond` passed to `listen`, by the user, by
- * another quick input replacing it, or by cancellation of `token`. Resolves to the first result
- * passed to `respond`, or to `null` if there was none or `token` was cancelled.
- */
-function showUntilHidden<Result>(
-    input: QuickInput,
-    token: CancellationToken,
-    listen: (respond: (result: Result) => void) => Disposable[],
-): Promise<Result | null> {
-    return new Promise(resolve => {
-        let result: Result | undefined
-        const subscriptions: Disposable[] = [
-            ...listen(r => {
-                // The input stays interactive until the editor processes `hide`.
-                if (result === undefined) {
-                    result = r
-                    input.hide()
-                }
-            }),
-            token.onCancellationRequested(() => input.hide()),
-            input.onDidHide(() => {
-                for (const s of subscriptions) {
-                    s.dispose()
-                }
-                input.dispose()
-                resolve(token.isCancellationRequested ? null : (result ?? null))
-            }),
-        ]
-        input.show()
-    })
-}
-
 /** VS Code shows `QuickPickItem.iconPath` since 1.81; earlier versions only render icons in labels. */
 const quickPickItemIconPathSupported = semver.gte(version, '1.81.0')
 
@@ -288,20 +255,6 @@ function setQuickPickParams(
     }
 }
 
-const showQuickPick = serverDialog(
-    showQuickPickMethod,
-    showQuickPickParamsSchema,
-    async (_, params, token): Promise<LeanShowQuickPickResult> => {
-        const pick = window.createQuickPick<IndexedQuickPickItem>()
-        const report = setQuickPickParams(pick, params, false)
-        return await showUntilHidden(pick, token, respond => [
-            pick.onDidAccept(() => respond(report.accepted())),
-            pick.onDidTriggerButton(button => respond(report.button(button))),
-            pick.onDidTriggerItemButton(({ item, button }) => respond(report.itemButton(item, button))),
-        ])
-    },
-)
-
 const validationSeverities = {
     info: InputBoxValidationSeverity.Info,
     warning: InputBoxValidationSeverity.Warning,
@@ -335,30 +288,6 @@ function setInputBoxParams(
             : undefined
     return button => reportButton(button, box.value)
 }
-
-const showInputBox = serverDialog(
-    showInputBoxMethod,
-    showInputBoxParamsSchema,
-    async (_, params, token): Promise<LeanShowInputBoxResult> => {
-        const box = window.createInputBox()
-        const reportButton = setInputBoxParams(box, params, false)
-        // Unlike `window.showInputBox`, an input box does not itself refuse to accept on an error.
-        let rejected = params.validationMessage?.severity === 'error'
-        return await showUntilHidden(box, token, respond => [
-            box.onDidAccept(() => {
-                if (!rejected) {
-                    respond({ accepted: { value: box.value } })
-                }
-            }),
-            box.onDidTriggerButton(button => respond(reportButton(button))),
-            // The message explains why the initial value was rejected, so it is stale once edited.
-            box.onDidChangeValue(() => {
-                box.validationMessage = undefined
-                rejected = false
-            }),
-        ])
-    },
-)
 
 function toFileFilters(
     filters: z.output<typeof fileFiltersSchema> | undefined,
@@ -515,34 +444,118 @@ class LiveQuickInput<Params extends LiveParams & { value?: string }, Result> {
     }
 
     hide() {
-        this.input.hide()
+        if (!this.ended) {
+            this.input.hide()
+        }
     }
 }
 
+type QuickPickSession = LiveQuickInput<z.output<typeof createQuickPickParamsSchema>, QuickPickResult>
+type InputBoxSession = LiveQuickInput<z.output<typeof createInputBoxParamsSchema>, InputBoxResult>
+
+/** Shows `params` in a new quick pick, as a session. `onEnd` runs when it closes. */
+function openQuickPick(
+    client: LanguageClient,
+    params: z.output<typeof createQuickPickParamsSchema>,
+    onEnd: () => void = () => {},
+): QuickPickSession {
+    const pick = window.createQuickPick<IndexedQuickPickItem>()
+    let report = setQuickPickParams(pick, params, false)
+    return new LiveQuickInput(
+        pick,
+        client,
+        params,
+        update => (report = setQuickPickParams(pick, update, true)),
+        emit => [
+            pick.onDidAccept(() => emit(report.accepted())),
+            pick.onDidTriggerButton(button => emit(report.button(button))),
+            pick.onDidTriggerItemButton(({ item, button }) => emit(report.itemButton(item, button))),
+        ],
+        onEnd,
+    )
+}
+
+/**
+ * Shows `params` in a new input box, as a session. `onEnd` runs when it closes. With `oneShot`, an
+ * initial `validationMessage` is shown until the user edits the text, and with severity `error` it
+ * refuses accepting until then, as `window.showInputBox` does; otherwise the server decides.
+ */
+function openInputBox(
+    client: LanguageClient,
+    params: z.output<typeof createInputBoxParamsSchema>,
+    oneShot: boolean,
+    onEnd: () => void = () => {},
+): InputBoxSession {
+    const box = window.createInputBox()
+    let reportButton = setInputBoxParams(box, params, false)
+    // Unlike `window.showInputBox`, an input box does not itself refuse to accept on an error.
+    let rejected = oneShot && params.validationMessage?.severity === 'error'
+    return new LiveQuickInput(
+        box,
+        client,
+        params,
+        update => (reportButton = setInputBoxParams(box, update, true)),
+        emit => [
+            box.onDidAccept(() => {
+                if (!rejected) {
+                    emit({ accepted: { value: box.value } })
+                }
+            }),
+            box.onDidTriggerButton(button => emit(reportButton(button))),
+            // The message explains why the initial value was rejected, so it is stale once edited.
+            ...(oneShot
+                ? [
+                      box.onDidChangeValue(() => {
+                          box.validationMessage = undefined
+                          rejected = false
+                      }),
+                  ]
+                : []),
+        ],
+        onEnd,
+    )
+}
+
+/** Answers a one-shot request: the session's first event, after which it closes. */
+async function firstResult<Params extends LiveParams & { value?: string }, Result>(
+    session: LiveQuickInput<Params, Result>,
+    token: CancellationToken,
+): Promise<Result | null> {
+    const answer = await session.next(undefined, token)
+    session.hide()
+    // A one-shot session reports no value changes, and no other update can be pending.
+    return answer !== null && !(answer instanceof ResponseError) && 'result' in answer.event
+        ? answer.event.result
+        : null
+}
+
+const showQuickPick = serverDialog(
+    showQuickPickMethod,
+    showQuickPickParamsSchema,
+    async (client, params, token): Promise<LeanShowQuickPickResult> =>
+        await firstResult(openQuickPick(client, params), token),
+)
+
+const showInputBox = serverDialog(
+    showInputBoxMethod,
+    showInputBoxParamsSchema,
+    async (client, params, token): Promise<LeanShowInputBoxResult> =>
+        await firstResult(openInputBox(client, params, true), token),
+)
+
 let nextSessionId = 0
-const liveQuickPicks = new Map<number, LiveQuickInput<z.output<typeof createQuickPickParamsSchema>, QuickPickResult>>()
-const liveInputBoxes = new Map<number, LiveQuickInput<z.output<typeof createInputBoxParamsSchema>, InputBoxResult>>()
+const liveQuickPicks = new Map<number, QuickPickSession>()
+const liveInputBoxes = new Map<number, InputBoxSession>()
 
 const createQuickPick = serverDialog(
     createQuickPickMethod,
     createQuickPickParamsSchema,
     async (client, params): Promise<number> => {
         const id = nextSessionId++
-        const pick = window.createQuickPick<IndexedQuickPickItem>()
-        let report = setQuickPickParams(pick, params, false)
-        const session = new LiveQuickInput<z.output<typeof createQuickPickParamsSchema>, QuickPickResult>(
-            pick,
-            client,
-            params,
-            update => (report = setQuickPickParams(pick, update, true)),
-            emit => [
-                pick.onDidAccept(() => emit(report.accepted())),
-                pick.onDidTriggerButton(button => emit(report.button(button))),
-                pick.onDidTriggerItemButton(({ item, button }) => emit(report.itemButton(item, button))),
-            ],
-            () => liveQuickPicks.delete(id),
+        liveQuickPicks.set(
+            id,
+            openQuickPick(client, params, () => liveQuickPicks.delete(id)),
         )
-        liveQuickPicks.set(id, session)
         return id
     },
 )
@@ -556,20 +569,10 @@ const createInputBox = serverDialog(
     createInputBoxParamsSchema,
     async (client, params): Promise<number> => {
         const id = nextSessionId++
-        const box = window.createInputBox()
-        let reportButton = setInputBoxParams(box, params, false)
-        const session = new LiveQuickInput<z.output<typeof createInputBoxParamsSchema>, InputBoxResult>(
-            box,
-            client,
-            params,
-            update => (reportButton = setInputBoxParams(box, update, true)),
-            emit => [
-                box.onDidAccept(() => emit({ accepted: { value: box.value } })),
-                box.onDidTriggerButton(button => emit(reportButton(button))),
-            ],
-            () => liveInputBoxes.delete(id),
+        liveInputBoxes.set(
+            id,
+            openInputBox(client, params, false, () => liveInputBoxes.delete(id)),
         )
-        liveInputBoxes.set(id, session)
         return id
     },
 )
