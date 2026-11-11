@@ -17,6 +17,23 @@ type Notification = <T extends string>(
     ...items: T[]
 ) => Thenable<T | undefined>
 
+type ItemNotification = <T extends MessageItem>(
+    message: string,
+    options: MessageOptions,
+    ...items: T[]
+) => Thenable<T | undefined>
+
+function toItemNotif(severity: NotificationSeverity): ItemNotification {
+    switch (severity) {
+        case 'Information':
+            return window.showInformationMessage
+        case 'Warning':
+            return window.showWarningMessage
+        case 'Error':
+            return window.showErrorMessage
+    }
+}
+
 function toNotif(severity: NotificationSeverity): Notification {
     switch (severity) {
         case 'Information':
@@ -156,22 +173,7 @@ export async function displayNotificationWithInput<T extends string>(
         return await toNotif(severity)(message, { modal: true }, ...[...items].reverse())
     }
 
-    let notif: <V extends MessageItem>(
-        message: string,
-        options: MessageOptions,
-        ...items: V[]
-    ) => Thenable<V | undefined>
-    switch (severity) {
-        case 'Information':
-            notif = window.showInformationMessage
-            break
-        case 'Warning':
-            notif = window.showWarningMessage
-            break
-        case 'Error':
-            notif = window.showErrorMessage
-            break
-    }
+    const notif = toItemNotif(severity)
     const messageItems = items.map(item => ({
         title: item,
         isCloseAffordance: false,
@@ -184,6 +186,22 @@ export async function displayNotificationWithInput<T extends string>(
     messageItems.reverse()
     const choice = await notif(message, { modal: true }, ...messageItems)
     return choice?.title
+}
+
+/**
+ * Shows `message` with buttons that carry more than a title, e.g. for the Lean server's message
+ * requests, and resolves to the chosen one, or `undefined` if the notification is dismissed. Modal or
+ * not, as `options` says; modal notifications list the buttons in the given order, like
+ * `displayNotificationWithInput`.
+ */
+export async function displayNotificationWithItems<T extends MessageItem>(
+    severity: NotificationSeverity,
+    message: string,
+    options: MessageOptions,
+    items: T[],
+): Promise<T | undefined> {
+    // VS Code renders buttons for modal notifications in the reverse order.
+    return await toItemNotif(severity)(message, options, ...(options.modal ? [...items].reverse() : items))
 }
 
 export async function displayModalNotification(severity: NotificationSeverity, message: string) {

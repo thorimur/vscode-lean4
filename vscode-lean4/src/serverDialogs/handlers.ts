@@ -5,7 +5,6 @@ import {
     Disposable,
     InputBox,
     InputBoxValidationSeverity,
-    MessageItem,
     MessageOptions,
     QuickInput,
     QuickInputButton,
@@ -27,6 +26,7 @@ import {
     State,
 } from 'vscode-languageclient/node'
 import { z } from 'zod'
+import { displayNotificationWithItems, NotificationSeverity } from '../utils/notifs'
 import {
     createInputBoxMethod,
     createInputBoxParamsSchema,
@@ -116,19 +116,14 @@ function serverDialog<Params>(
     }
 }
 
-function showMessage<T extends MessageItem>(
-    type: number,
-    message: string,
-    options: MessageOptions,
-    items: T[],
-): Thenable<T | undefined> {
+function notificationSeverity(type: number): NotificationSeverity {
     switch (type) {
         case MessageType.Error:
-            return window.showErrorMessage(message, options, ...items)
+            return 'Error'
         case MessageType.Warning:
-            return window.showWarningMessage(message, options, ...items)
+            return 'Warning'
         default:
-            return window.showInformationMessage(message, options, ...items)
+            return 'Information'
     }
 }
 
@@ -137,7 +132,12 @@ const showMessageRequest = serverDialog(
     showMessageRequestParamsSchema,
     async (_, params): Promise<LeanShowMessageRequestResult> => {
         const options: MessageOptions = { modal: params.modal ?? false, detail: params.detail }
-        const chosen = await showMessage(params.type, params.message, options, params.actions ?? [])
+        const chosen = await displayNotificationWithItems(
+            notificationSeverity(params.type),
+            params.message,
+            options,
+            params.actions ?? [],
+        )
         return chosen ?? null
     },
 )
