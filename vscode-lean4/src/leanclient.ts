@@ -54,6 +54,8 @@ import * as fs from 'fs'
 import { glob } from 'glob'
 import * as semver from 'semver'
 import { DiagnosticChangeEvent, LeanClientDiagnosticCollection } from './diagnostics'
+import { leanWindowClientCapabilities, registerServerDialogs } from './serverDialogs/handlers'
+import { LeanWindowClientCapabilities } from './serverDialogs/protocol'
 import { formatCommandExecutionOutput } from './utils/batch'
 import {
     c2pConverter,
@@ -104,12 +106,14 @@ interface LeanClientCapabilties {
     incrementalDiagnosticSupport?: boolean
     silentDiagnosticSupport?: boolean
     rpcWireFormat?: RpcWireFormat
+    window?: LeanWindowClientCapabilities
 }
 
 const leanClientCapabilities: LeanClientCapabilties = {
     incrementalDiagnosticSupport: true,
     silentDiagnosticSupport: true,
-    rpcWireFormat: 'v1'
+    rpcWireFormat: 'v1',
+    window: leanWindowClientCapabilities,
 }
 
 export type PrepareModuleHierarchyResult =
@@ -1038,6 +1042,7 @@ export class LeanClient implements Disposable {
             clear() {},
         }
         client.registerFeature(leanCapabilityFeature)
+        registerServerDialogs(client)
 
         patchConverters(client.protocol2CodeConverter, client.code2ProtocolConverter)
         return client
